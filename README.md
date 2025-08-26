@@ -32,6 +32,8 @@ pip3 install -r requirements.txt   # optional if you maintain a requirements fil
 python3 main.py
 ```
 
+![](src/Images/01-Audinux.png)
+
 ---
 
 ## Features
