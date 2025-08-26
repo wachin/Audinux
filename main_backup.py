@@ -204,40 +204,6 @@ class AudioProcessor:
     def _on_error(self, event):
         print("Error en reproducción de audio")
         self.is_ready = False
-        
-    # En clase AudioProcessor añadido:
-    def precompute_waveform(self, resolution_per_second=50):
-        """
-        Precargar toda la forma de onda en memoria.
-        resolution_per_second = cantidad de puntos por segundo de audio.
-        """
-        if not self.audio_path or not os.path.exists(self.audio_path):
-            self.waveform_cache = (np.array([]), np.array([]))
-            return
-        
-        try:
-            seg = AudioSegment.from_file(self.audio_path)
-            mono = seg.set_channels(1)
-            arr = np.array(mono.get_array_of_samples()).astype(np.float32)
-            max_val = float(1 << (8 * mono.sample_width - 1))
-            arr /= max_val
-
-            samples_per_second = mono.frame_rate
-            bucket_size = int(samples_per_second / resolution_per_second)
-            if bucket_size < 1:
-                bucket_size = 1
-
-            trimmed_len = len(arr) - (len(arr) % bucket_size)
-            reshaped = arr[:trimmed_len].reshape(-1, bucket_size)
-            mins = reshaped.min(axis=1)
-            maxs = reshaped.max(axis=1)
-
-            self.waveform_cache = (mins, maxs)
-            self.waveform_resolution = resolution_per_second
-            print(f"Waveform precalculado: {len(mins)} puntos")
-        except Exception as e:
-            print(f"Error precalculando waveform: {e}")
-            self.waveform_cache = (np.array([]), np.array([]))
 
     def load_audio(self, file_path: str):
         if not os.path.exists(file_path):
@@ -477,36 +443,25 @@ class WaveformWidget(QWidget):
         
         return first_line, last_line
 
-    # En clase WaveformWidget arreglado:
     def _load_line_data(self, line_idx: int):
-        """Cargar datos precalculados para una línea"""
+        """Cargar datos para una línea específica si no están en caché"""
         if line_idx in self.line_cache:
             return
+            
         if line_idx not in self.line_time_info:
             return
-
-        if not self.audio_processor or not hasattr(self.audio_processor, "waveform_cache"):
-            return
-
-        mins, maxs = self.audio_processor.waveform_cache
-        if len(mins) == 0:
-            return
-
-        # Datos de tiempo de la línea
+            
         time_info = self.line_time_info[line_idx]
         start_ms = time_info['start_ms']
         end_ms = time_info['end_ms']
-        line_duration = end_ms - start_ms
-
-        # Índices en el array precalculado
-        points_per_ms = self.audio_processor.waveform_resolution / 1000.0
-        start_idx = int(start_ms * points_per_ms)
-        end_idx = int(end_ms * points_per_ms)
-
-        seg_mins = mins[start_idx:end_idx]
-        seg_maxs = maxs[start_idx:end_idx]
-
-        self.line_cache[line_idx] = (seg_mins, seg_maxs)
+        
+        # Calcular resolución basada en el ancho disponible
+        width = max(1, self.width() - 100)  # Dejar espacio para el tiempo
+        resolution = max(100, width // 2)  # Al menos 100 puntos, máximo la mitad del ancho
+        
+        # Obtener datos de forma de onda para esta línea
+        mins, maxs = self.audio_processor.get_waveform_segment(start_ms, end_ms, resolution)
+        self.line_cache[line_idx] = (mins, maxs)
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -596,30 +551,6 @@ class WaveformWidget(QWidget):
                         
                         painter.setPen(pen_playhead)
                         painter.drawLine(playhead_x, y, playhead_x, y + self.line_height)
-                        
-    # Añadido arreglo a WaveformWidget:
-    def mousePressEvent(self, event):
-        if not self.audio_processor or self.duration_ms <= 0:
-            return
-        
-        # Línea clicada
-        line_idx = event.pos().y() // (self.line_height + self.line_spacing)
-        if line_idx not in self.line_time_info:
-            return
-    
-        time_info = self.line_time_info[line_idx]
-        line_start = time_info['start_ms']
-        line_end = time_info['end_ms']
-        line_duration = line_end - line_start
-    
-        axis_x = 100
-        axis_width = max(1, self.width() - axis_x - 10)
-        rel_x = max(0, min(event.pos().x() - axis_x, axis_width))
-    
-        position_in_line = rel_x / axis_width
-        ms = line_start + int(position_in_line * line_duration)
-    
-        self.audio_processor.set_position_ms(ms)
 
 # Ventana principal de la aplicación
 class AudioPlayer(QMainWindow):
@@ -780,7 +711,6 @@ class AudioPlayer(QMainWindow):
     def _load_path(self, path: str, add_to_playlist: bool = False):
         try:
             self.audio.load_audio(path)
-            self.audio.precompute_waveform(resolution_per_second=50)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"No se pudo cargar el archivo:\n{e}")
             return
